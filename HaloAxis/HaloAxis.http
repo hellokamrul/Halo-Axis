@@ -1,0 +1,6 @@
+@HaloAxis_HostAddress = http://localhost:5231
+
+GET {{HaloAxis_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
