@@ -5,13 +5,14 @@ namespace HaloAxis.Service
     public interface IUserService
     {
         Task<UserResponse> RegisterAsync(UserRegisterRequest request);
-        Task<CurrenUserResponse> GetUserResponseAsync();
+        Task<CurrenUserResponse> GetCurrentUserAsync();
         Task<UserResponse> GetByIdAsync(Guid id);
         Task<UserResponse> UpdateAsync(Guid id, UpdateUserRequest request);
         Task DeleteAsync(Guid id);
-        Task<UserResponse> LoginAsync(UserLoginRequest request);
-        Task<RevokeRefreshTokenResponse> RevokeRefreshTokenAsync(RefreshTokenRequest request);
+        Task<RevokeRefreshTokenResponse> RevokeRefreshToken(RefreshTokenRequest refreshTokenRemoveRequest);
         Task<CurrenUserResponse> RefreshTokenAsync(RefreshTokenRequest request);
+
+        Task<UserResponse> LoginAsync(UserLoginRequest request);
 
     }
 }

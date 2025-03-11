@@ -12,10 +12,18 @@ namespace HaloAxis.Service
     {
         private readonly ITokenService _tokenService;
         private readonly ICurrentUserService _currentUserService;
-        private readonly UserManager<ApplicationUser> _userManager; 
+        private readonly UserManager<ApplicationUser> _userManager;
         private readonly IMapper _mapper;
         private readonly ILogger<UserService> _logger;
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="UserServiceImpl"/> class.
+        /// </summary>
+        /// <param name="tokenService">The token service for generating tokens.</param>
+        /// <param name="currentUserService">The current user service for retrieving current user information.</param>
+        /// <param name="userManager">The user manager for managing user information.</param>
+        /// <param name="mapper">The mapper for mapping objects.</param>
+        /// <param name="logger">The logger for logging information.</param>
         public UserService(ITokenService tokenService, ICurrentUserService currentUserService, UserManager<ApplicationUser> userManager, IMapper mapper, ILogger<UserService> logger)
         {
             _tokenService = tokenService;
@@ -25,46 +33,68 @@ namespace HaloAxis.Service
             _logger = logger;
         }
 
+        /// <summary>
+        /// Registers a new user.
+        /// </summary>
+        /// <param name="request">The user registration request.</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains the user response.</returns>
+        /// <exception cref="Exception">Thrown when the email already exists or user creation fails.</exception>
         public async Task<UserResponse> RegisterAsync(UserRegisterRequest request)
         {
             _logger.LogInformation("Registering user");
             var existingUser = await _userManager.FindByEmailAsync(request.Email);
             if (existingUser != null)
             {
-                _logger.LogError("Email already in use");
-                throw new InvalidOperationException("Email already in use");
+                _logger.LogError("Email already exists");
+                throw new Exception("Email already exists");
             }
+
             var newUser = _mapper.Map<ApplicationUser>(request);
 
+            // Generate a unique username
             newUser.UserName = GenerateUserName(request.FirstName, request.LastName);
             var result = await _userManager.CreateAsync(newUser, request.Password);
-
             if (!result.Succeeded)
             {
                 var errors = string.Join(", ", result.Errors.Select(e => e.Description));
-                _logger.LogError("Failed to create user", errors);
-                throw new InvalidOperationException("Failed to create user");
+                _logger.LogError("Failed to create user: {errors}", errors);
+                throw new Exception($"Failed to create user: {errors}");
             }
-
             _logger.LogInformation("User created successfully");
             await _tokenService.GenerateJwtToken(newUser);
+            newUser.CreateAt = DateTime.Now;
+            newUser.UpdateAt = DateTime.Now;
             return _mapper.Map<UserResponse>(newUser);
-
         }
 
+        /// <summary>
+        /// Generates a unique username by concatenating the first name and last name.
+        /// </summary>
+        /// <param name="firstName">The first name of the user.</param>
+        /// <param name="lastName">The last name of the user.</param>
+        /// <returns>The generated unique username.</returns>
         private string GenerateUserName(string firstName, string lastName)
         {
-            var baseUserName = $"{firstName}{lastName}".ToLower();
-            var userName = baseUserName;
-            var counter = 1;
-            while (_userManager.Users.Any(u => u.UserName == userName))
+            var baseUsername = $"{firstName}{lastName}".ToLower();
+
+            // Check if the username already exists
+            var username = baseUsername;
+            var count = 1;
+            while (_userManager.Users.Any(u => u.UserName == username))
             {
-                userName = $"{baseUserName}{counter}";
-                counter++;
+                username = $"{baseUsername}{count}";
+                count++;
             }
-            return userName;
+            return username;
         }
 
+        /// <summary>
+        /// Logs in a user.
+        /// </summary>
+        /// <param name="request">The user login request.</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains the user response.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when the login request is null.</exception>
+        /// <exception cref="Exception">Thrown when the email or password is invalid or user update fails.</exception>
         public async Task<UserResponse> LoginAsync(UserLoginRequest request)
         {
             if (request == null)
@@ -74,34 +104,33 @@ namespace HaloAxis.Service
             }
 
             var user = await _userManager.FindByEmailAsync(request.Email);
-            var passwordValid = await _userManager.CheckPasswordAsync(user, request.Password);
-            if (user == null || !passwordValid)
+            if (user == null || !await _userManager.CheckPasswordAsync(user, request.Password))
             {
-                _logger.LogError("User not found");
-                throw new InvalidOperationException("User not found");
+                _logger.LogError("Invalid email or password");
+                throw new Exception("Invalid email or password");
             }
-            //Generate Access Token
-            var token =  await _tokenService.GenerateJwtToken(user);
 
-            //Generate Refresh Token
+            // Generate access token
+            var token = await _tokenService.GenerateJwtToken(user);
+
+            // Generate refresh token
             var refreshToken = _tokenService.GenerateRefreshToken();
 
-
-            //Save or overwrite Refresh Token to Database 
-
+            // Hash the refresh token and store it in the database or override the existing refresh token
             using var sha256 = SHA256.Create();
             var refreshTokenHash = sha256.ComputeHash(Encoding.UTF8.GetBytes(refreshToken));
             user.RefreshToken = Convert.ToBase64String(refreshTokenHash);
             user.RefreshTokenExpiryTime = DateTime.Now.AddDays(2);
 
-            //Update User information in Database
-            var result = await _userManager.UpdateAsync(user);
+            user.CreateAt = DateTime.Now;
 
+            // Update user information in database
+            var result = await _userManager.UpdateAsync(user);
             if (!result.Succeeded)
             {
                 var errors = string.Join(", ", result.Errors.Select(e => e.Description));
-                _logger.LogError("Failed to update user", errors);
-                throw new InvalidOperationException("Failed to update user");
+                _logger.LogError("Failed to update user: {errors}", errors);
+                throw new Exception($"Failed to update user: {errors}");
             }
 
             var userResponse = _mapper.Map<ApplicationUser, UserResponse>(user);
@@ -109,46 +138,14 @@ namespace HaloAxis.Service
             userResponse.RefreshToken = refreshToken;
 
             return userResponse;
-
-
         }
 
-        public async Task<UserResponse> UpdateAsync(Guid id, UpdateUserRequest request)
-        {
-            var user = await _userManager.FindByIdAsync(id.ToString());
-            if (user == null)
-            {
-                _logger.LogError("User not found");
-                throw new InvalidOperationException("User not found");
-            }
-
-            user.FirstName = request.FirstName;
-            user.LastName = request.LastName;
-            user.Email = request.Email;
-            user.Gender = request.Gender;
-
-
-
-
-            var result = await _userManager.UpdateAsync(user);
-            if (!result.Succeeded) {
-                var errors = string.Join(", ", result.Errors.Select(e => e.Description));
-                _logger.LogError("Failed to update user", errors);
-                throw new InvalidOperationException("Failed to update user");
-            }
-
-            return _mapper.Map<UserResponse>(user);
-        }
-        public async Task DeleteAsync(Guid id)
-        {
-            var user = await _userManager.FindByIdAsync(id.ToString());
-            if (user == null) {
-                _logger.LogError("User not found");
-                throw new InvalidOperationException("User not found");
-            }
-            await _userManager.DeleteAsync(user);
-        }
-
+        /// <summary>
+        /// Gets a user by ID.
+        /// </summary>
+        /// <param name="id">The ID of the user.</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains the user response.</returns>
+        /// <exception cref="Exception">Thrown when the user is not found.</exception>
         public async Task<UserResponse> GetByIdAsync(Guid id)
         {
             _logger.LogInformation("Getting user by id");
@@ -156,119 +153,166 @@ namespace HaloAxis.Service
             if (user == null)
             {
                 _logger.LogError("User not found");
-                throw new InvalidOperationException("User not found");
+                throw new Exception("User not found");
             }
             _logger.LogInformation("User found");
             return _mapper.Map<UserResponse>(user);
-
         }
 
-        public async Task<CurrenUserResponse> GetUserResponseAsync()
+        /// <summary>
+        /// Gets the current user.
+        /// </summary>
+        /// <returns>A task that represents the asynchronous operation. The task result contains the current user response.</returns>
+        /// <exception cref="Exception">Thrown when the user is not found.</exception>
+        public async Task<CurrenUserResponse> GetCurrentUserAsync()
         {
             var user = await _userManager.FindByIdAsync(_currentUserService.GetUserId());
-            if (user == null) {
+            if (user == null)
+            {
                 _logger.LogError("User not found");
-                throw new InvalidOperationException("User not found");
+                throw new Exception("User not found");
             }
             return _mapper.Map<CurrenUserResponse>(user);
-
         }
 
-      
-
+        /// <summary>
+        /// Refreshes the access token using the refresh token.
+        /// </summary>
+        /// <param name="request">The refresh token request.</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains the current user response.</returns>
+        /// <exception cref="Exception">Thrown when the refresh token is invalid or expired.</exception>
         public async Task<CurrenUserResponse> RefreshTokenAsync(RefreshTokenRequest request)
         {
-            _logger.LogInformation("Refreshing token");
+            _logger.LogInformation("RefreshToken");
 
-            //hash the incoming refresh token and compare it with the one in the database
+            // Hash the incoming RefreshToken and compare it with the one stored in the database
             using var sha256 = SHA256.Create();
             var refreshTokenHash = sha256.ComputeHash(Encoding.UTF8.GetBytes(request.RefreshToken));
             var hashedRefreshToken = Convert.ToBase64String(refreshTokenHash);
 
-            //find the user based on the refresh token
+            // Find user based on the refresh token
             var user = await _userManager.Users.FirstOrDefaultAsync(u => u.RefreshToken == hashedRefreshToken);
             if (user == null)
             {
-                _logger.LogError("User not found");
-                throw new InvalidOperationException("User not found");
+                _logger.LogError("Invalid refresh token");
+                throw new Exception("Invalid refresh token");
             }
 
-            //validate the refresh token expiry time
+            // Validate the refresh token expiry time
             if (user.RefreshTokenExpiryTime < DateTime.Now)
             {
-                _logger.LogWarning("Refresh token expired for user ID:{UserId}",user.Id);
-                throw new InvalidOperationException("Refresh token expired");
+                _logger.LogWarning("Refresh token expired for user ID: {UserId}", user.Id);
+                throw new Exception("Refresh token expired");
             }
 
-            //generate new access token
+            // Generate a new access token
             var newAccessToken = await _tokenService.GenerateJwtToken(user);
-            _logger.LogInformation("Token refreshed successfully");
-            var currenUserResponse = _mapper.Map<ApplicationUser, CurrenUserResponse>(user);
-            currenUserResponse.AccessToken = newAccessToken;
-            return currenUserResponse;
-
-
+            _logger.LogInformation("Access token generated successfully");
+            var currentUserResponse = _mapper.Map<CurrenUserResponse>(user);
+            currentUserResponse.AccessToken = newAccessToken;
+            return currentUserResponse;
         }
 
-
-
-        public async Task<RevokeRefreshTokenResponse> RevokeRefreshTokenAsync(RefreshTokenRequest request)
+        /// <summary>
+        /// Revokes the refresh token.
+        /// </summary>
+        /// <param name="refreshTokenRemoveRequest">The refresh token request to be revoked.</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains the revoke refresh token response.</returns>
+        /// <exception cref="Exception">Thrown when the refresh token is invalid or expired.</exception>
+        public async Task<RevokeRefreshTokenResponse> RevokeRefreshToken(RefreshTokenRequest refreshTokenRemoveRequest)
         {
             _logger.LogInformation("Revoking refresh token");
 
             try
             {
+                // Hash the refresh token
                 using var sha256 = SHA256.Create();
-                var refreshTokenHash = sha256.ComputeHash(Encoding.UTF8.GetBytes(request.RefreshToken));
+                var refreshTokenHash = sha256.ComputeHash(Encoding.UTF8.GetBytes(refreshTokenRemoveRequest.RefreshToken));
                 var hashedRefreshToken = Convert.ToBase64String(refreshTokenHash);
 
+                // Find the user based on the refresh token
                 var user = await _userManager.Users.FirstOrDefaultAsync(u => u.RefreshToken == hashedRefreshToken);
                 if (user == null)
                 {
-                    _logger.LogError("User not found");
-                    throw new InvalidOperationException("User not found");
+                    _logger.LogError("Invalid refresh token");
+                    throw new Exception("Invalid refresh token");
                 }
 
-                //validate the refresh token expiry time
+                // Validate the refresh token expiry time
                 if (user.RefreshTokenExpiryTime < DateTime.Now)
                 {
-                    _logger.LogWarning("Refresh token expired for user ID:{UserId}", user.Id);
-                    throw new InvalidOperationException("Refresh token expired");
+                    _logger.LogWarning("Refresh token expired for user ID: {UserId}", user.Id);
+                    throw new Exception("Refresh token expired");
                 }
 
-                //remove the refresh token from the database
+                // Remove the refresh token
                 user.RefreshToken = null;
                 user.RefreshTokenExpiryTime = null;
 
-                //update the user in the database
+                // Update user information in database
                 var result = await _userManager.UpdateAsync(user);
                 if (!result.Succeeded)
                 {
-                    var errors = string.Join(", ", result.Errors.Select(e => e.Description));
-                    _logger.LogError("Failed to update user : {errors}", errors);
-                    {
-                        return new RevokeRefreshTokenResponse
-                        {
-                            Message = "Failed to revoke refresh token",
-                        };
-                        throw new InvalidOperationException("Failed to update user");
-                    }
-                }
-                    _logger.LogInformation("Refresh token revoked successfully");
+                    _logger.LogError("Failed to update user");
                     return new RevokeRefreshTokenResponse
                     {
-                        Message = "Refresh token revoked successfully",
+                        Message = "Failed to revoke refresh token"
                     };
-
-
                 }
+                _logger.LogInformation("Refresh token revoked successfully");
+                return new RevokeRefreshTokenResponse
+                {
+                    Message = "Refresh token revoked successfully"
+                };
+            }
             catch (Exception ex)
             {
-                _logger.LogError(ex.Message, "Failed to revoke refresh token:{ex}");
-                throw new InvalidOperationException("Failed to revoke refresh token");
+                _logger.LogError("Failed to revoke refresh token: {ex}", ex.Message);
+                throw new Exception("Failed to revoke refresh token");
             }
         }
 
-     
+        /// <summary>
+        /// Updates a user.
+        /// </summary>
+        /// <param name="id">The ID of the user to be updated.</param>
+        /// <param name="request">The update user request.</param>
+        /// <returns>A task that represents the asynchronous operation. The task result contains the user response.</returns>
+        /// <exception cref="Exception">Thrown when the user is not found.</exception>
+        public async Task<UserResponse> UpdateAsync(Guid id, UpdateUserRequest request)
+        {
+            var user = await _userManager.FindByIdAsync(id.ToString());
+            if (user == null)
+            {
+                _logger.LogError("User not found");
+                throw new Exception("User not found");
+            }
+
+            user.UpdateAt = DateTime.Now;
+            user.FirstName = request.FirstName;
+            user.LastName = request.LastName;
+            user.Email = request.Email;
+            user.Gender = request.Gender;
+
+            await _userManager.UpdateAsync(user);
+            return _mapper.Map<UserResponse>(user);
+        }
+
+        /// <summary>
+        /// Deletes a user.
+        /// </summary>
+        /// <param name="id">The ID of the user to be deleted.</param>
+        /// <returns>A task that represents the asynchronous operation.</returns>
+        /// <exception cref="Exception">Thrown when the user is not found.</exception>
+        public async Task DeleteAsync(Guid id)
+        {
+            var user = await _userManager.FindByIdAsync(id.ToString());
+            if (user == null)
+            {
+                _logger.LogError("User not found");
+                throw new Exception("User not found");
+            }
+            await _userManager.DeleteAsync(user);
+        }
     }
 }
