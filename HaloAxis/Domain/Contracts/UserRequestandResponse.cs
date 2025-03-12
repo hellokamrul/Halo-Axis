@@ -51,7 +51,7 @@
 
     public class RevokeRefreshTokenResponse
     {
-        public string Token { get; set; }
+        public string Message { get; set; }
 
     }
 
